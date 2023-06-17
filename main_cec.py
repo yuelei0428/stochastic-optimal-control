@@ -55,21 +55,15 @@ def cec_controller(cur_state, ref_state, obstacles, time_step, cur_iter):
     # 3. \Tilde{p}_t + r_t \in F
 
     # Q 2x2 is a symmetric positive definite matrix, the stage cost for deviating from the reference position trajectory
-    Q = ca.DM([[1, 0], [0, 1]])
+    Q = ca.DM([[10, 0], [0, 10]])
     # R 2x2 is a symmetric positive definite matrix, the stage cost for using excessive control effort
-    R = ca.DM([[0.1, 0], [0, 0.1]])
+    R = ca.DM([[1, 0], [0, 0.1]])
     # q > 0 is the stage cost for deviating from the reference orientation trajectory
-    q = 1
+    q = 20
     # gamma \in (0, 1) is a scalar defining the discount factor
-    gamma = 0.9
+    gamma = 0.8
 
 
-    # define the constraints
-    # u_t \in U
-    v_min = 0
-    v_max = 1
-    w_min = -1
-    w_max = 1
 
     ob_xy1 = obstacles[0][ : 2]
     ob_xy2 = obstacles[1][ : 2]
@@ -88,7 +82,7 @@ def cec_controller(cur_state, ref_state, obstacles, time_step, cur_iter):
     
 
     
-    T = 1
+    T = 4
     opti = ca.Opti()
     u_t = opti.variable(T, 2)
     cost = 0
@@ -105,27 +99,23 @@ def cec_controller(cur_state, ref_state, obstacles, time_step, cur_iter):
 
         # constraint: e_{t+1} = e_t + G(e_t)u_t
         # G(e_t) = [time_step * cos(tilde_theta_t), 0; time_step * sin(tilde_theta_t), 0; 0, time_step]
-        angle_degree = cur_state[2] * 180 / np.pi
-        Ge_t = ca.DM([[time_step * ca.cos(angle_degree), 0], [time_step * ca.sin(angle_degree), 0], [0, time_step]])
-        et = ca.vertcat(tilde_pt, tilde_theta_t)
+        # Ge_t = ca.DM([[time_step * ca.cos(cur_state[2]), 0], [time_step * ca.sin(cur_state[2]), 0], [0, time_step]])
+        # et = ca.vertcat(tilde_pt, tilde_theta_t)
         # add e_t_plus_1 = e_t + Ge_t @ u_t to the list of constraints
 
 
-        cur_state = car_next_state(time_step, cur_state, u_t[t,:], noise = False)
+        cur_state = car_next_state(time_step, cur_state, u_t[t,:])
         ref_state_new = lissajous(cur_iter + t + 1)
-
-        ref_state_diff = ca.vertcat(ref_state_new[0] - ref_state[0], ref_state_new[1] - ref_state[1], ref_state_new[2] - ref_state[2])
+        
         ref_state = ref_state_new
-
 
         # update the tilde_pt and tilde_theta_t
         pt = ca.vertcat(cur_state[0], cur_state[1])
         rt = ca.vertcat(ref_state[0], ref_state[1])
         tilde_pt = pt - rt
         tilde_theta_t= cur_state[2] - ref_state[2]
-        et_plus_1 = ca.vertcat(tilde_pt, tilde_theta_t)
 
-        cost += gamma**(t) * (tilde_pt.T @ Q @ tilde_pt + q * (1 - ca.cos(tilde_theta_t * 180 / np.pi))**2 + u_t[t,:] @ R @ u_t[t,:].T)
+        cost += gamma**(t) * (tilde_pt.T @ Q @ tilde_pt + q * (1 - ca.cos(tilde_theta_t))**2 + u_t[t,:] @ R @ u_t[t,:].T)
 
 
         opti.subject_to(v_min <= u_t[t, 0])
@@ -136,53 +126,41 @@ def cec_controller(cur_state, ref_state, obstacles, time_step, cur_iter):
         opti.subject_to(pt[0] <= 3)
         opti.subject_to(-3 <= pt[1])
         opti.subject_to(pt[1] <= 3)
-        opti.subject_to((pt - ob_xy1).T @ (pt - ob_xy1) >= (ob_r1)**2)
-        opti.subject_to((pt - ob_xy2).T @ (pt - ob_xy2) >= (ob_r2)**2)
-        # opti.subject_to(et_plus_1 == et + Ge_t @ u_t[t,:].T + ref_state_diff)
+        opti.subject_to((pt - ob_xy1).T @ (pt - ob_xy1) > (ob_r1)**2)
+        opti.subject_to((pt - ob_xy2).T @ (pt - ob_xy2) > (ob_r2)**2)
 
 
 
 
     # add the cost function
     opti.minimize(cost)
-    # solve the optimization problem
+    # solve the nonlinear optimization problem
     opti.solver('ipopt', {'ipopt.print_level': 0})
     sol = opti.solve()
 
     # get the optimal control
     u_opt = sol.value(u_t)
     minimal_cost = sol.value(cost)
+    # print("u_opt", u_opt)
+    # print("minimal cost", minimal_cost)
 
-    # return the optimal control
-    print("u_opt: ", u_opt)
-    return u_opt
-
-
-
+    return u_opt[0]
 
 
 
 # This function implement the car dynamics
-def car_next_state(time_step, cur_state, control, noise = True):
+def car_next_state(time_step, cur_state, control):
     theta = cur_state[2]
     # rot_3d_z = np.array([[np.cos(theta), 0], [np.sin(theta), 0], [0, 1]])
     control = control.T
-    rot_3d_z = ca.DM([[ca.cos(theta), 0], [ca.sin(theta), 0], [0, 1]])
-    f = rot_3d_z @ control
-    # f0 = ca.cos(theta) * control[0]
-    # f1 = ca.sin(theta) * control[0]
-    # f2 = control[1]
-    # f = ca.vertcat(f0, f1, f2)
-    mu, sigma = 0, 0.04 # mean and standard deviation for (x,y)
-    w_xy = np.random.normal(mu, sigma, 2)
-    mu, sigma = 0, 0.004  # mean and standard deviation for theta
-    w_theta = np.random.normal(mu, sigma, 1)
-    w = np.concatenate((w_xy, w_theta))
-    if noise:
-        return cur_state + time_step*f.flatten() + w
-    else:
-        result = cur_state + time_step*f
-        return result
+    # rot_3d_z = ca.DM([[ca.cos(theta), 0], [ca.sin(theta), 0], [0, 1]])
+    # f = rot_3d_z @ control
+    f0 = ca.cos(theta) * control[0]
+    f1 = ca.sin(theta) * control[0]
+    f2 = control[1]
+    f = ca.vertcat(f0, f1, f2)
+    result = cur_state + time_step*f
+    return result
 
 def car_next_state_numpy(time_step, cur_state, control, noise = True):
     theta = cur_state[2]
@@ -225,23 +203,23 @@ if __name__ == '__main__':
 
         ################################################################
         # Generate control input
-        # TODO: Replace this simple controller with your own controller
         # control = simple_controller(cur_state, cur_ref)
         control = cec_controller(cur_state, cur_ref, obstacles, time_step, cur_iter)
-        print("[v,w]", control)
+
         ################################################################
 
         # Apply control input
         next_state = car_next_state_numpy(time_step, cur_state, control, noise=False)
+        next_state[2] = (next_state[2] + np.pi) % (2 * np.pi ) - np.pi
         print("next_state", next_state)
         # Update current state
         cur_state = next_state
         # Loop time
         t2 = time()
         print(cur_iter)
-        print(t2-t1)
         times.append(t2-t1)
         error = error + np.linalg.norm(cur_state - cur_ref)
+        print("error", error)
         cur_iter = cur_iter + 1
 
     main_loop_time = time()
@@ -254,5 +232,5 @@ if __name__ == '__main__':
     ref_traj = np.array(ref_traj)
     car_states = np.array(car_states)
     times = np.array(times)
-    visualize(car_states, ref_traj, obstacles, times, time_step, save=True)
+    visualize(car_states, ref_traj, obstacles, times, time_step, save=False)
 

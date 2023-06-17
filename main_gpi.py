@@ -1,11 +1,13 @@
 from time import time
 import numpy as np
 from utils import visualize
+import gpi_pytorch2
+from itertools import product
 
 # Simulation params
 np.random.seed(10)
 time_step = 0.5 # time between steps in seconds
-sim_time = 120    # simulation time
+sim_time = 50    # simulation time, in this way n_t = 100
 
 # Car params
 x_init = 1.5
@@ -40,25 +42,52 @@ def simple_controller(cur_state, ref_state):
     v = k_v*np.sqrt((cur_state[0] - ref_state[0])**2 + (cur_state[1] - ref_state[1])**2)
     v = np.clip(v, v_min, v_max)
     angle_diff = ref_state[2] - cur_state[2]
-    angle_diff = (angle_diff + np.pi) % (2 * np.pi ) - np.pi
+    angle_diff = (angle_diff + np.pi) % (2 * np.pi) - np.pi
     w = k_w*angle_diff
     w = np.clip(w, w_min, w_max)
     return [v,w]
 
 # This function implement the car dynamics
-def car_next_state(time_step, cur_state, control, noise = True):
+def car_next_state(time_step, cur_state, control, noise=True):
     theta = cur_state[2]
     rot_3d_z = np.array([[np.cos(theta), 0], [np.sin(theta), 0], [0, 1]])
     f = rot_3d_z @ control
-    mu, sigma = 0, 0.04 # mean and standard deviation for (x,y)
+    mu, sigma = 0, 0.04  # mean and standard deviation for (x,y)
     w_xy = np.random.normal(mu, sigma, 2)
     mu, sigma = 0, 0.004  # mean and standard deviation for theta
     w_theta = np.random.normal(mu, sigma, 1)
     w = np.concatenate((w_xy, w_theta))
     if noise:
-        return cur_state + time_step*f.flatten() + w
+        return cur_state + time_step * f.flatten() + w
     else:
-        return cur_state + time_step*f.flatten()
+        return cur_state + time_step * f.flatten()
+
+def new_gpi_controller(cur_state, cur_ref, cur_iter, P_error_state):
+    error_state = cur_state - cur_ref
+    ########## remember to configure the parameters ##########
+    n_f = 15
+    n_theta = 30
+    f_min = -3
+    f_max = 3
+    theta_min = -np.pi
+    theta_max = np.pi
+    #######################################################
+    x = np.linspace(f_min, f_max, n_f)
+    y = np.linspace(f_min, f_max, n_f)
+    theta = np.linspace(theta_min, theta_max, n_theta)
+
+    error_state[2] = np.mod(error_state[2] + np.pi, 2 * np.pi) - np.pi
+
+    all_error_states = np.array(list(product(x, y, theta)))
+    # check which index in the vectorized states is the closest to the error state
+    diff = np.linalg.norm(all_error_states - (error_state + cur_ref), axis=1)
+    count = np.argmin(diff)
+    
+    u = P_error_state[cur_iter, count]
+    return u
+    
+
+    
 
 if __name__ == '__main__':
     # Obstacles in the environment
@@ -74,6 +103,10 @@ if __name__ == '__main__':
     # Initialize state
     cur_state = np.array([x_init, y_init, theta_init])
     cur_iter = 0
+    P_error_state = np.load('P_error_state_sd_nt100_nf15.npy')
+    print(P_error_state.shape)
+    P_error_state = P_error_state.reshape((100, -1, 2))
+
     # Main loop
     while (cur_iter * time_step < sim_time):
         t1 = time()
@@ -86,19 +119,21 @@ if __name__ == '__main__':
 
         ################################################################
         # Generate control input
-        # TODO: Replace this simple controller with your own controller
-        control = simple_controller(cur_state, cur_ref)
+        # control = simple_controller(cur_state, cur_ref)
+        control = new_gpi_controller(cur_state, cur_ref, cur_iter, P_error_state)
         print("[v,w]", control)
         ################################################################
 
         # Apply control input
-        next_state = car_next_state(time_step, cur_state, control, noise=True)
+        next_state = car_next_state(time_step, cur_state, control, noise=False)
+        print("cur_state", cur_state)
+        print('cur_ref', cur_ref)
         # Update current state
         cur_state = next_state
         # Loop time
         t2 = time()
         print(cur_iter)
-        print(t2-t1)
+        print("----------------------------------")
         times.append(t2-t1)
         error = error + np.linalg.norm(cur_state - cur_ref)
         cur_iter = cur_iter + 1
