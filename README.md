@@ -13,3 +13,8 @@ This file contains examples of how to generate control inputs from a simple P co
 ### 2. utils.py
 This file contains code to visualize the desired trajectory, robot's trajectory, and obstacles.
 
+
+## My Implementation
+The gpi_pytorch.py runs the value iteration. The P matrix will be saved after running python gpi_pytorch.py. The main_gpi will use the P matrix saved to do the simulation. 
+The main_cec.py solves a non linear optimization problem for tracking a directory.
+
